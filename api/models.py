@@ -1,294 +1,161 @@
+import uuid
 from django.db import models
 
-class Role(models.Model):
-    id = models.AutoField(primary_key=True) 
-    nombre = models.CharField(max_length=255, null=True, blank=True)
-    descripcion = models.CharField(max_length=255, null=True, blank=True)
-    eliminado = models.BooleanField(default=False)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-    
-    class Meta:
-        db_table = 'roles'
-        
+# ==========================================
+# MÓDULO 1: SEGURIDAD (RBAC)
+# ==========================================
+class Rol(models.Model):
+    nombre = models.CharField(max_length=50) # Ej: Admin, Terapeuta, Tutor
+
+    def __str__(self):
+        return self.nombre
+
 class Usuario(models.Model):
-    id = models.AutoField(primary_key=True)
-    usuario = models.CharField(max_length=255, unique=True)
-    nombres = models.CharField(max_length=255)
-    apellidos = models.CharField(max_length=255)
-    correo = models.CharField(max_length=255, unique=True)
-    password_hash = models.CharField(max_length=255)
-    salt = models.CharField(max_length=255)    
-    roles = models.ManyToManyField(
-        Role, 
-        related_name="usuarios",
-        db_table="usuarios_roles" 
-    )
-    
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-    
-    class Meta:
-        db_table = 'usuarios'
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    rol = models.ForeignKey(Rol, on_delete=models.PROTECT)
+    email = models.EmailField(unique=True)
+    password = models.CharField(max_length=255) # Hash
+    nombre_completo = models.CharField(max_length=255)
+    telefono = models.CharField(max_length=20, blank=True, null=True)
+    activo = models.BooleanField(default=True)
 
-class CaballoEstadoSalud(models.Model):
-    id = models.AutoField(primary_key=True)
-    descripcion = models.CharField(max_length=255)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-    
-    class Meta:
-        db_table = 'estados_salud'
+    def __str__(self):
+        return self.nombre_completo
 
+# ==========================================
+# MÓDULO 2: CATÁLOGOS MAESTROS
+# ==========================================
+class CatalogoEspecialidad(models.Model):
+    nombre = models.CharField(max_length=100) # Ej: Fisioterapia, Psicología
+    def __str__(self): return self.nombre
+
+class CatalogoDiagnostico(models.Model):
+    nombre = models.CharField(max_length=100) # Ej: PCI, TEA, Síndrome de Down
+    def __str__(self): return self.nombre
+
+class CatalogoObjetivo(models.Model):
+    nombre = models.CharField(max_length=255) # Ej: Mejorar equilibrio
+    def __str__(self): return self.nombre
+
+class CatalogoEstadoCaballo(models.Model):
+    nombre = models.CharField(max_length=50) # Ej: Activo, Reposo, Atención Médica
+    def __str__(self): return self.nombre
+
+class CatalogoEventoEquino(models.Model):
+    nombre = models.CharField(max_length=100) # Ej: Vacuna, Herraje, Lesión
+    def __str__(self): return self.nombre
+
+class CatalogoEstadoSesion(models.Model):
+    nombre = models.CharField(max_length=50) # Ej: Programada, En Curso, Finalizada, Cancelada
+    def __str__(self): return self.nombre
+
+class CatalogoEstadoPago(models.Model):
+    nombre = models.CharField(max_length=50) # Ej: Pendiente, Pagado, Vencido, Condonado
+    def __str__(self): return self.nombre
+
+class CatalogoParentesco(models.Model):
+    nombre = models.CharField(max_length=50) # Ej: Madre, Padre, Abuelo/a, Tutor Legal
+    def __str__(self): return self.nombre
+
+# ==========================================
+# MÓDULO 3: EQUIPO CLÍNICO
+# ==========================================
+class Terapeuta(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    usuario = models.OneToOneField(Usuario, on_delete=models.PROTECT)
+    especialidad = models.ForeignKey(CatalogoEspecialidad, on_delete=models.PROTECT)
+    cedula_profesional = models.CharField(max_length=50, blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.usuario.nombre_completo} - {self.especialidad.nombre}"
+
+# ==========================================
+# MÓDULO 5: ACTIVOS Y BIENESTAR ANIMAL (Definido antes por dependencias)
+# ==========================================
 class Caballo(models.Model):
-    id = models.AutoField(primary_key=True)
-    nombre = models.CharField(max_length=255)
-    raza = models.CharField(max_length=255)
-    edad = models.IntegerField()
-    peso_max = models.FloatField()
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    nombre = models.CharField(max_length=100)
+    estado_salud = models.ForeignKey(CatalogoEstadoCaballo, on_delete=models.PROTECT)
+    peso_max_soporta = models.DecimalField(max_digits=5, decimal_places=2) # En kg
     sesiones_semanales_max = models.IntegerField()
-    estado_salud = models.ForeignKey(
-        CaballoEstadoSalud, 
-        on_delete=models.RESTRICT,
-        related_name="history"
-    )
-    
-    activo = models.BooleanField(default=False)
-    eliminado = models.BooleanField(default=False)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-    
-    class Meta:
-        db_table = 'caballos'
-        
-class Tutor(models.Model):
-    id = models.AutoField(primary_key=True)
-    usuario_id = models.ForeignKey(
-        Usuario, 
-        on_delete=models.CASCADE
-    )
-    telefono = models.CharField(max_length=20)
-    direccion = models.CharField(max_length=255)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
+    activo = models.BooleanField(default=True)
 
-    class Meta:
-        db_table = 'tutores'
-        
-class Paciente(models.Model):
-    id = models.AutoField(primary_key=True)
-    tutor_id = models.ForeignKey(
-        Tutor, 
-        on_delete=models.CASCADE
-    )
-    caballo_favorito_id = models.ForeignKey(
-        Caballo, 
-        on_delete=models.SET_NULL,
-        null=True
-    )
-    nombre = models.CharField(max_length=255)
-    edad = models.IntegerField()
-    peso = models.FloatField()
-    activo = models.BooleanField(default=False)
-    eliminado = models.BooleanField(default=False)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
+    def __str__(self):
+        return self.nombre
 
-    class Meta:
-        db_table = 'pacientes'
-        
-class Diagnosticos(models.Model):
-    id = models.AutoField(primary_key=True)
-    descripcion = models.CharField(max_length=255)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-
-    class Meta:
-        db_table = 'diagnosticos'
-        
-class PacientesDiagnosticos(models.Model):
-    id = models.AutoField(primary_key=True)
-    paciente_id = models.ForeignKey(
-        Paciente, 
-        on_delete=models.CASCADE
-    )
-    diagnostico = models.ForeignKey(
-        Diagnosticos,
-        on_delete=models.SET_NULL,
-        null=True
-    )
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-
-    class Meta:
-        db_table = 'pacientes_diagnosticos'
-        
 class BitacoraEquina(models.Model):
-    id = models.AutoField(primary_key=True)
-    paciente_id = models.ForeignKey(
-        Paciente, 
-        on_delete=models.CASCADE
-    )
-    caballo_id = models.ForeignKey(
-        Caballo, 
-        on_delete=models.CASCADE
-    )
-    fecha_sesion = models.DateTimeField()
-    duracion_sesion = models.IntegerField()  # Duración en minutos
-    observaciones = models.TextField(null=True, blank=True)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    caballo = models.ForeignKey(Caballo, on_delete=models.PROTECT)
+    fecha_registro = models.DateField(auto_now_add=True)
+    tipo_evento = models.ForeignKey(CatalogoEventoEquino, on_delete=models.PROTECT)
+    descripcion_veterinaria = models.TextField()
 
-    class Meta:
-        db_table = 'bitacoras_equinas'
-             
-class Parentesco(models.Model):
-    id = models.AutoField(primary_key=True)
-    descripcion = models.CharField(max_length=255)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-
-    class Meta:
-        db_table = 'parentescos'
-        
-class ContactosEmergencia(models.Model):
-    id = models.AutoField(primary_key=True)
-    paciente_id = models.ForeignKey(
-        Paciente, 
-        on_delete=models.CASCADE
-    )
+# ==========================================
+# MÓDULO 4: PACIENTES Y FAMILIAS
+# ==========================================
+class Paciente(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tutor = models.ForeignKey(Usuario, on_delete=models.PROTECT, related_name='pacientes_tutorados')
+    caballo_favorito = models.ForeignKey(Caballo, on_delete=models.SET_NULL, null=True, blank=True)
     nombre = models.CharField(max_length=255)
+    fecha_nacimiento = models.DateField()
+    peso_kg = models.DecimalField(max_digits=5, decimal_places=2)
+    activo = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.nombre
+
+class PacienteDiagnostico(models.Model):
+    paciente = models.ForeignKey(Paciente, on_delete=models.CASCADE)
+    diagnostico = models.ForeignKey(CatalogoDiagnostico, on_delete=models.PROTECT)
+    observaciones = models.TextField(blank=True, null=True)
+
+    class Meta:
+        unique_together = ('paciente', 'diagnostico')
+
+class ContactoEmergencia(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    paciente = models.ForeignKey(Paciente, on_delete=models.CASCADE)
+    parentesco = models.ForeignKey(CatalogoParentesco, on_delete=models.PROTECT)
+    nombre_completo = models.CharField(max_length=255)
     telefono = models.CharField(max_length=20)
-    parentesco_id = models.ForeignKey(
-        Parentesco,
-        on_delete=models.SET_NULL,
-        null=True
-    )
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
 
-    class Meta:
-        db_table = 'contactos_emergencia'
-        
-class EstatusSesion(models.Model):
-    id = models.AutoField(primary_key=True)
-    descripcion = models.CharField(max_length=255)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-    
-    class Meta:
-        db_table = 'estatus_sesiones'
-        
-class Terapeutas(models.Model):
-    id = models.AutoField(primary_key=True)
-    usuario_id = models.ForeignKey(
-        Usuario, 
-        on_delete=models.CASCADE
-    )
-    especialidad = models.CharField(max_length=255)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-
-    class Meta:
-        db_table = 'terapeutas'
-        
+# ==========================================
+# MÓDULO 6: OPERACIÓN CLÍNICA (CORE)
+# ==========================================
 class Sesion(models.Model):
-    id = models.AutoField(primary_key=True)
-    terapeuta_id = models.ForeignKey(
-        Terapeutas, 
-        on_delete=models.CASCADE
-    )
-    paciente_id = models.ForeignKey(
-        Paciente, 
-        on_delete=models.CASCADE
-    )
-    caballo_id = models.ForeignKey(
-        Caballo, 
-        on_delete=models.CASCADE
-    )
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    paciente = models.ForeignKey(Paciente, on_delete=models.PROTECT)
+    terapeuta = models.ForeignKey(Terapeuta, on_delete=models.PROTECT)
+    caballo = models.ForeignKey(Caballo, on_delete=models.PROTECT)
     fecha_hora = models.DateTimeField()
-    duracion = models.IntegerField()  # Duración en minutos
-    estatus_id = models.ForeignKey(
-        EstatusSesion,
-        on_delete=models.SET_NULL,
-        null=True
-    )
-    observaciones = models.TextField(null=True, blank=True)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
+    estatus = models.ForeignKey(CatalogoEstadoSesion, on_delete=models.PROTECT)
 
-    class Meta:
-        db_table = 'sesiones'
-        
+    def __str__(self):
+        return f"Sesion: {self.paciente.nombre} - {self.fecha_hora.strftime('%d/%m/%Y')}"
+
 class ReporteSesion(models.Model):
-    id = models.AutoField(primary_key=True)
-    sesion_id = models.ForeignKey(
-        Sesion, 
-        on_delete=models.CASCADE
-    )
-    ansiedad_inicial = models.IntegerField()
-    ansiedad_final = models.IntegerField()
-    notas_clinicas = models.TextField(null=True, blank=True)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    sesion = models.OneToOneField(Sesion, on_delete=models.PROTECT)
+    ansiedad_inicial = models.IntegerField(help_text="Escala del 1 al 10")
+    ansiedad_final = models.IntegerField(help_text="Escala del 1 al 10")
+    notas_clinicas = models.TextField()
+    recomendacion_casa = models.TextField()
+
+class ReporteObjetivo(models.Model):
+    reporte = models.ForeignKey(ReporteSesion, on_delete=models.CASCADE)
+    objetivo = models.ForeignKey(CatalogoObjetivo, on_delete=models.PROTECT)
 
     class Meta:
-        db_table = 'reportes_sesiones'  
-        
-class Objetivos(models.Model):
-    id = models.AutoField(primary_key=True)
-    descripcion = models.CharField(max_length=255)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
+        unique_together = ('reporte', 'objetivo')
 
-    class Meta:
-        db_table = 'objetivos'
-
-
-class ReporteObjetivos(models.Model):
-    id = models.AutoField(primary_key=True)
-    reporte_sesion_id = models.ForeignKey(
-        ReporteSesion, 
-        on_delete=models.CASCADE
-    )
-    objetivo_id = models.ForeignKey(
-        Objetivos,
-        on_delete=models.SET_NULL,
-        null=True
-    )
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-
-    class Meta:
-        db_table = 'reportes_objetivos'
-        
-class EstadosPago(models.Model):
-    id = models.AutoField(primary_key=True)
-    descripcion = models.CharField(max_length=255)
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-
-    class Meta:
-        db_table = 'estados_pago'
-        
-class Pagos(models.Model):
-    id = models.AutoField(primary_key=True)
-    tutor_id = models.ForeignKey(
-        Tutor, 
-        on_delete=models.CASCADE
-    )
-    sesion_id = models.ForeignKey(
-        Sesion,
-        on_delete=models.CASCADE
-    )
-    monto = models.FloatField()
-    estatus_id = models.ForeignKey(
-        EstadosPago,
-        on_delete=models.SET_NULL,
-        null=True
-    )
-    creacion = models.DateTimeField(auto_now_add=True, null=True)
-    actualizacion = models.DateTimeField(auto_now=True, null=True)
-
-    class Meta:
-        db_table = 'pagos'
+# ==========================================
+# MÓDULO 7: ADMINISTRACIÓN FINANCIERA
+# ==========================================
+class Pago(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tutor = models.ForeignKey(Usuario, on_delete=models.PROTECT, related_name='pagos_tutor')
+    sesion = models.ForeignKey(Sesion, on_delete=models.PROTECT)
+    monto = models.DecimalField(max_digits=10, decimal_places=2)
+    estatus = models.ForeignKey(CatalogoEstadoPago, on_delete=models.PROTECT)
+    fecha_limite = models.DateField()
