@@ -4,7 +4,8 @@ from api.models import (
     CatalogoObjetivo, CatalogoEstadoCaballo, CatalogoEventoEquino,
     CatalogoEstadoSesion, CatalogoEstadoPago, CatalogoParentesco,
     Terapeuta, Caballo, BitacoraEquina, Paciente, PacienteDiagnostico,
-    ContactoEmergencia, Sesion, ReporteSesion, ReporteObjetivo, Pago
+    ContactoEmergencia, Sesion, ReporteSesion, ReporteObjetivo, Pago,
+    BitacoraSeguridad
 )
 
 # --- Catálogos ---
@@ -64,21 +65,27 @@ class TerapeutaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Terapeuta
         fields = '__all__'
+        depth = 1
 
 class CaballoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Caballo
         fields = '__all__'
+        depth = 1
 
 class BitacoraEquinaSerializer(serializers.ModelSerializer):
     class Meta:
         model = BitacoraEquina
         fields = '__all__'
+        depth = 1
 
 class PacienteSerializer(serializers.ModelSerializer):
+    tutor_nombre = serializers.CharField(source='tutor.nombre_completo', read_only=True)
+    
     class Meta:
         model = Paciente
         fields = '__all__'
+        depth = 1
 
 class PacienteDiagnosticoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -94,11 +101,24 @@ class SesionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sesion
         fields = '__all__'
+        depth = 2
+
+class SesionWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Sesion
+        fields = '__all__'
 
 class ReporteSesionSerializer(serializers.ModelSerializer):
     class Meta:
         model = ReporteSesion
         fields = '__all__'
+        depth = 1
+
+class ReporteSesionWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReporteSesion
+        fields = '__all__'
+
 
 class ReporteObjetivoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -109,3 +129,10 @@ class PagoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Pago
         fields = '__all__'
+
+class BitacoraSeguridadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BitacoraSeguridad
+        fields = '__all__'
+        depth = 1
+

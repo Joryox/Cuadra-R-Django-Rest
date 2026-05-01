@@ -65,12 +65,15 @@ class Terapeuta(models.Model):
     usuario = models.OneToOneField(Usuario, on_delete=models.PROTECT)
     especialidad = models.ForeignKey(CatalogoEspecialidad, on_delete=models.PROTECT)
     cedula_profesional = models.CharField(max_length=50, blank=True, null=True)
+    biografia = models.TextField(blank=True, null=True)
+    disponible = models.BooleanField(default=True)  # Switch: vacaciones/fuera de servicio
+    fecha_registro = models.DateField(auto_now_add=True, null=True, blank=True)
 
     def __str__(self):
         return f"{self.usuario.nombre_completo} - {self.especialidad.nombre}"
 
 # ==========================================
-# MÓDULO 5: ACTIVOS Y BIENESTAR ANIMAL (Definido antes por dependencias)
+# MÓDULO 5: ACTIVOS Y BIENESTAR ANIMAL
 # ==========================================
 class Caballo(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -78,7 +81,12 @@ class Caballo(models.Model):
     estado_salud = models.ForeignKey(CatalogoEstadoCaballo, on_delete=models.PROTECT)
     peso_max_soporta = models.DecimalField(max_digits=5, decimal_places=2) # En kg
     sesiones_semanales_max = models.IntegerField()
-    activo = models.BooleanField(default=True)
+    raza = models.CharField(max_length=100, blank=True, null=True)
+    tipo = models.CharField(max_length=100, blank=True, null=True)
+    activo = models.BooleanField(default=True)  # Archivado (borrado lógico)
+    disponible = models.BooleanField(default=True)  # Switch: descanso
+    fecha_registro = models.DateField(auto_now_add=True, null=True, blank=True)
+    motivo_inactividad = models.CharField(max_length=255, blank=True, null=True)
 
     def __str__(self):
         return self.nombre
@@ -101,6 +109,19 @@ class Paciente(models.Model):
     fecha_nacimiento = models.DateField()
     peso_kg = models.DecimalField(max_digits=5, decimal_places=2)
     activo = models.BooleanField(default=True)
+    fecha_registro = models.DateField(auto_now_add=True, null=True, blank=True)
+    
+    # Historial Clínico
+    es_mayor_de_edad = models.BooleanField(default=False)
+    estado_civil = models.CharField(max_length=50, blank=True, null=True)
+    ocupacion_escolaridad = models.CharField(max_length=200, blank=True, null=True)
+    direccion = models.TextField(blank=True, null=True)
+    contacto_emergencia = models.CharField(max_length=255, blank=True, null=True)
+    tutor_secundario_nombre = models.CharField(max_length=255, blank=True, null=True)
+    tutor_secundario_telefono = models.CharField(max_length=20, blank=True, null=True)
+    motivo_consulta = models.TextField(blank=True, null=True)
+    historial_medico = models.TextField(blank=True, null=True)
+    antecedentes_familiares = models.TextField(blank=True, null=True)
 
     def __str__(self):
         return self.nombre
@@ -159,3 +180,35 @@ class Pago(models.Model):
     monto = models.DecimalField(max_digits=10, decimal_places=2)
     estatus = models.ForeignKey(CatalogoEstadoPago, on_delete=models.PROTECT)
     fecha_limite = models.DateField()
+    fecha_pago = models.DateField(auto_now_add=True, null=True, blank=True)
+    comprobante = models.FileField(upload_to='pagos/', blank=True, null=True)
+
+    def __str__(self):
+        return f"Pago: {self.tutor.nombre_completo} - ${self.monto}"
+
+# ==========================================
+# MÓDULO 8: SEGURIDAD Y AUDITORÍA
+# ==========================================
+class BitacoraSeguridad(models.Model):
+    TIPOS_EVENTO = (
+        ('LOGIN', 'Inicio de Sesión'),
+        ('PASSWORD_CHANGE', 'Cambio de Contraseña'),
+        ('ARCHIVE', 'Registro Archivado'),
+        ('RESTORE', 'Registro Restaurado'),
+        ('CRITICAL_CONFIG', 'Cambio en Configuración Crítica'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    usuario_afectado = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='eventos_recibidos')
+    usuario_accion = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, related_name='eventos_realizados')
+    tipo_evento = models.CharField(max_length=50, choices=TIPOS_EVENTO)
+    descripcion = models.TextField()
+    fecha_hora = models.DateTimeField(auto_now_add=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        verbose_name_plural = "Bitácora de Seguridad"
+        ordering = ['-fecha_hora']
+
+    def __str__(self):
+        return f"{self.tipo_evento} - {self.usuario_afectado.email} - {self.fecha_hora}"

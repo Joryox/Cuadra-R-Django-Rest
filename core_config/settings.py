@@ -22,14 +22,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Detectar entorno
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'development').lower()
-USE_FIREBIRD = os.getenv('USE_FIREBIRD', 'False').lower() == 'true'
+USE_POSTGRES = True # Forzado para asegurar conexión con PostgreSQL
+# USE_POSTGRES = os.getenv('USE_POSTGRES', 'False').lower() == 'true'
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-hr9t8ak#*%vee4$2jq!2&9g#vgfks@k3@$0awl_(#l$=0$zlap'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-hr9t8ak#*%vee4$2jq!2&9g#vgfks@k3@$0awl_(#l$=0$zlap')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -89,17 +90,16 @@ WSGI_APPLICATION = 'core_config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
 
-if USE_FIREBIRD and ENVIRONMENT == 'production':
-    # Producción: Firebird
+if USE_POSTGRES:
+    # Producción / DBeaver: PostgreSQL
     DATABASES = {
         'default': {
-            'ENGINE': 'django_firebird',
-            'NAME': os.getenv('DB_NAME', '/home/sw4rcoagb/Documentos/Firebird_BD/Cuadra_ERRE.fdb'),
-            'USER': os.getenv('DB_USER', 'SYSDBA'),
-            'PASSWORD': os.getenv('DB_PASSWORD', 'masterkey'),
-            'HOST': os.getenv('DB_HOST', '10.0.0.5'),
-            'PORT': os.getenv('DB_PORT', '3050'),
-            'DIALECT': 3,
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('DB_NAME', 'cuadra_erre'),
+            'USER': os.getenv('DB_USER', 'postgres'),
+            'PASSWORD': os.getenv('DB_PASSWORD', ''),
+            'HOST': os.getenv('DB_HOST', 'localhost'),
+            'PORT': os.getenv('DB_PORT', '5432'),
         }
     }
 else:
@@ -142,6 +142,9 @@ USE_I18N = True
 
 USE_TZ = True
 
+# Flexibilidad con las URLs
+APPEND_SLASH = False
+
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
@@ -157,14 +160,14 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Django REST Framework Configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
         'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
+        'rest_framework.permissions.AllowAny',
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20,
+    # 'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    # 'PAGE_SIZE': 20,
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
         'rest_framework.filters.SearchFilter',
@@ -179,16 +182,7 @@ REST_FRAMEWORK = {
 }
 
 # CORS Configuration
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
-    'http://localhost:8000',
-    'http://localhost:8001',
-    'http://127.0.0.1:3000',
-    'http://127.0.0.1:8000',
-    'http://127.0.0.1:8001',
-    'http://localhost',
-    'http://127.0.0.1',
-]
+CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = [
