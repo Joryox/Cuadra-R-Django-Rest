@@ -12,9 +12,21 @@ from api.models import (
     CatalogoObjetivo, CatalogoEstadoCaballo, CatalogoEventoEquino,
     CatalogoEstadoSesion, CatalogoEstadoPago, CatalogoParentesco,
     Terapeuta, Caballo, BitacoraEquina, Paciente, PacienteDiagnostico,
-    ContactoEmergencia, Sesion, ReporteSesion, ReporteObjetivo, Pago
+    ContactoEmergencia, Sesion, ReporteSesion, ReporteObjetivo, Pago,
+    BitacoraSeguridad
 )
-from api.serializers import *
+from api.serializers import (
+    RolSerializer, UsuarioSerializer, CatalogoEspecialidadSerializer,
+    CatalogoDiagnosticoSerializer, CatalogoObjetivoSerializer,
+    CatalogoEstadoCaballoSerializer, CatalogoEventoEquinoSerializer,
+    CatalogoEstadoSesionSerializer, CatalogoEstadoPagoSerializer,
+    CatalogoParentescoSerializer, TerapeutaSerializer, CaballoSerializer,
+    CaballoWriteSerializer, BitacoraEquinaSerializer, BitacoraEquinaWriteSerializer,
+    PacienteSerializer, PacienteDiagnosticoSerializer, ContactoEmergenciaSerializer,
+    SesionSerializer, SesionWriteSerializer, ReporteSesionSerializer,
+    ReporteSesionWriteSerializer, ReporteObjetivoSerializer, PagoSerializer,
+    BitacoraSeguridadSerializer
+)
 import httpx
 
 # --- Catálogos ---
@@ -189,11 +201,24 @@ class TerapeutaViewSet(viewsets.ModelViewSet):
     destroy=extend_schema(tags=['Caballos']),
 )
 class CaballoViewSet(viewsets.ModelViewSet):
-    queryset = Caballo.objects.all()
+    queryset = Caballo.objects.all().order_by('-fecha_registro')
     serializer_class = CaballoSerializer
-    permission_classes = [AllowAny]
     authentication_classes = [] # Desactivado temporalmente
-    pagination_class = None
+    permission_classes = [AllowAny]
+
+    def get_serializer_class(self):
+        if self.action in ['create', 'update', 'partial_update']:
+            return CaballoWriteSerializer
+        return CaballoSerializer
+
+    def partial_update(self, request, *args, **kwargs):
+        # Sincronización automática de estado_salud con disponible
+        if 'disponible' in request.data:
+            disponible = request.data.get('disponible')
+            # ID 1: Activo, ID 2: Reposo
+            request.data['estado_salud'] = 1 if disponible else 2
+            
+        return super().partial_update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -210,10 +235,16 @@ class CaballoViewSet(viewsets.ModelViewSet):
     destroy=extend_schema(tags=['Caballos']),
 )
 class BitacoraEquinaViewSet(viewsets.ModelViewSet):
-    queryset = BitacoraEquina.objects.all().order_by('-fecha_registro')
+    queryset = BitacoraEquina.objects.all().order_by('-fecha_evento', '-hora_evento', '-fecha_registro')
     serializer_class = BitacoraEquinaSerializer
+    filterset_fields = ['caballo']
     permission_classes = [AllowAny]
     pagination_class = None
+
+    def get_serializer_class(self):
+        if self.action in ['create', 'update', 'partial_update']:
+            return BitacoraEquinaWriteSerializer
+        return BitacoraEquinaSerializer
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -221,6 +252,11 @@ class BitacoraEquinaViewSet(viewsets.ModelViewSet):
         if caballo_id:
             qs = qs.filter(caballo_id=caballo_id)
         return qs
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 @extend_schema_view(
     list=extend_schema(tags=['Pacientes']),

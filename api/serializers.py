@@ -68,16 +68,38 @@ class TerapeutaSerializer(serializers.ModelSerializer):
         depth = 1
 
 class CaballoSerializer(serializers.ModelSerializer):
+    ultimo_evento = serializers.SerializerMethodField()
+
     class Meta:
         model = Caballo
         fields = '__all__'
         depth = 1
+
+    def get_ultimo_evento(self, obj):
+        evento = obj.bitacoraequina_set.order_by('-fecha_evento', '-hora_evento', '-fecha_registro').first()
+        if evento:
+            return {
+                "tipo": evento.tipo_evento.nombre,
+                "descripcion": evento.descripcion_veterinaria,
+                "fecha": evento.fecha_registro.strftime("%Y-%m-%d")
+            }
+        return None
+
+class CaballoWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Caballo
+        fields = '__all__'
 
 class BitacoraEquinaSerializer(serializers.ModelSerializer):
     class Meta:
         model = BitacoraEquina
         fields = '__all__'
         depth = 1
+
+class BitacoraEquinaWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BitacoraEquina
+        fields = '__all__'
 
 class PacienteSerializer(serializers.ModelSerializer):
     tutor_nombre = serializers.CharField(source='tutor.nombre_completo', read_only=True)

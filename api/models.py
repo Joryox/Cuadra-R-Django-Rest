@@ -95,6 +95,8 @@ class BitacoraEquina(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     caballo = models.ForeignKey(Caballo, on_delete=models.PROTECT)
     fecha_registro = models.DateField(auto_now_add=True)
+    fecha_evento = models.DateField(null=True, blank=True)
+    hora_evento = models.TimeField(null=True, blank=True)
     tipo_evento = models.ForeignKey(CatalogoEventoEquino, on_delete=models.PROTECT)
     descripcion_veterinaria = models.TextField()
 
