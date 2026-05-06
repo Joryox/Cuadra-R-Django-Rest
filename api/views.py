@@ -1,10 +1,11 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.contrib.auth.hashers import check_password, make_password
 from django.db.models import Count, Sum
 from django.utils import timezone
+from django.db import transaction
 import jwt, datetime, os
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
 from api.models import (
@@ -211,14 +212,18 @@ class CaballoViewSet(viewsets.ModelViewSet):
             return CaballoWriteSerializer
         return CaballoSerializer
 
-    def partial_update(self, request, *args, **kwargs):
-        # Sincronización automática de estado_salud con disponible
-        if 'disponible' in request.data:
-            disponible = request.data.get('disponible')
-            # ID 1: Activo, ID 2: Reposo
-            request.data['estado_salud'] = 1 if disponible else 2
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        data = self.request.data
+        if 'disponible' in data:
+            disp = data.get('disponible')
+            if isinstance(disp, str):
+                disp = disp.lower() == 'true'
             
-        return super().partial_update(request, *args, **kwargs)
+            instance.estado_salud_id = 1 if disp else 2
+            if disp:
+                instance.motivo_inactividad = None
+            instance.save(update_fields=['estado_salud_id', 'motivo_inactividad'])
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -248,6 +253,13 @@ class BitacoraEquinaViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
+        # Si es terapeuta, solo ve sus propios eventos o los que él reportó
+        if not self.request.user.is_staff and hasattr(self.request.user, 'terapeuta'):
+             # Los terapeutas pueden ver todas las bitácoras (para conocer el estado del caballo)
+             # Pero solo pueden editar las propias si quisiéramos restringir más.
+             # Por ahora, permitimos lectura total por bienestar animal.
+             pass
+        
         caballo_id = self.request.query_params.get('caballo')
         if caballo_id:
             qs = qs.filter(caballo_id=caballo_id)
@@ -316,6 +328,20 @@ class SesionViewSet(viewsets.ModelViewSet):
     permission_classes = [AllowAny]
     pagination_class = None
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.request.user.is_anonymous:
+            return qs.none()
+            
+        rol_nombre = getattr(self.request.user.rol, 'nombre', '')
+        
+        if not self.request.user.is_staff:
+            if rol_nombre == 'Terapeuta':
+                return qs.filter(terapeuta__usuario=self.request.user)
+            elif rol_nombre in ['Tutor', 'Paciente']:
+                return qs.filter(paciente__tutor=self.request.user)
+        return qs
+
     def get_serializer_class(self):
         if self.action in ['create', 'update', 'partial_update']:
             from api.serializers import SesionWriteSerializer
@@ -323,24 +349,66 @@ class SesionViewSet(viewsets.ModelViewSet):
         return SesionSerializer
 
     def create(self, request, *args, **kwargs):
-        # REGLA 2: Bienestar Animal
-        caballo_id = request.data.get('caballo')
+        """
+        Validaciones previas al guardar una sesión:
+          1. Bienestar Animal: estado Activo + límite de peso.
+          2. TAREA 3 — Anti-colisión: caballo y terapeuta libres en ese horario.
+        Se consideran en conflicto las sesiones con estatus 'Programada' o 'En Curso'.
+        Sesiones 'Cancelada' o 'Finalizada' liberan el recurso.
+        """
+        caballo_id  = request.data.get('caballo')
         paciente_id = request.data.get('paciente')
-        
+        terapeuta_id = request.data.get('terapeuta')
+        fecha_hora  = request.data.get('fecha_hora')
+
         try:
-            caballo = Caballo.objects.get(id=caballo_id)
+            caballo  = Caballo.objects.get(id=caballo_id)
             paciente = Paciente.objects.get(id=paciente_id)
-            
-            # a) El estado de salud debe ser Activo
-            if caballo.estado_salud.nombre.lower() != 'activo':
-                return Response({"error": "El caballo no esta en estado Activo."}, status=status.HTTP_400_BAD_REQUEST)
-                
-            # b) El peso del paciente NO debe superar el peso soportado por el caballo
-            if paciente.peso_kg > caballo.peso_max_soporta:
-                return Response({"error": "El paciente supera el peso maximo que soporta este caballo."}, status=status.HTTP_400_BAD_REQUEST)
-                
         except (Caballo.DoesNotExist, Paciente.DoesNotExist):
             return Response({"error": "Caballo o Paciente no encontrado."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # ── Regla 1: Bienestar Animal ─────────────────────────────────────────
+        if caballo.estado_salud.nombre.lower() != 'activo':
+            return Response(
+                {"error": "El caballo no está en estado Activo y no puede trabajar."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if paciente.peso_kg > caballo.peso_max_soporta:
+            return Response(
+                {"error": f"El paciente ({paciente.peso_kg} kg) supera el peso máximo que soporta {caballo.nombre} ({caballo.peso_max_soporta} kg)."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Regla 2: Anti-Colisión de Horarios (TAREA 3) ─────────────────────
+        if fecha_hora:
+            # Estatus que bloquean el recurso (ocupado)
+            estatus_bloqueantes = CatalogoEstadoSesion.objects.filter(
+                nombre__in=['Programada', 'En Curso']
+            ).values_list('id', flat=True)
+
+            # ¿El caballo ya tiene sesión activa en esa fecha/hora?
+            conflicto_caballo = Sesion.objects.filter(
+                caballo_id=caballo_id,
+                fecha_hora=fecha_hora,
+                estatus_id__in=estatus_bloqueantes
+            ).exists()
+            if conflicto_caballo:
+                return Response(
+                    {"error": f"{caballo.nombre} ya está asignado a otra sesión en ese horario."},
+                    status=status.HTTP_409_CONFLICT
+                )
+
+            # ¿El terapeuta ya tiene sesión activa en esa fecha/hora?
+            conflicto_terapeuta = Sesion.objects.filter(
+                terapeuta_id=terapeuta_id,
+                fecha_hora=fecha_hora,
+                estatus_id__in=estatus_bloqueantes
+            ).exists()
+            if conflicto_terapeuta:
+                return Response(
+                    {"error": "El terapeuta ya está ocupado en ese horario."},
+                    status=status.HTTP_409_CONFLICT
+                )
 
         return super().create(request, *args, **kwargs)
 
@@ -357,9 +425,32 @@ class ReporteSesionViewSet(viewsets.ModelViewSet):
     permission_classes = [AllowAny]
     pagination_class = None
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.request.user.is_anonymous:
+            return qs.none()
+            
+        rol_nombre = getattr(self.request.user.rol, 'nombre', '')
+        
+        if not self.request.user.is_staff:
+            if rol_nombre == 'Terapeuta':
+                return qs.filter(sesion__terapeuta__usuario=self.request.user)
+            elif rol_nombre in ['Tutor', 'Paciente']:
+                return qs.filter(sesion__paciente__tutor=self.request.user)
+        return qs
+
     def get_serializer_class(self):
+        from api.serializers import (
+            ReporteSesionWriteSerializer, 
+            ReporteSesionSerializer, 
+            TutorReporteSesionSerializer
+        )
+        # SI ES TUTOR O PACIENTE, USAR SERIALIZADOR SIN NOTAS CLÍNICAS (PRIVACIDAD MÉDICA)
+        rol_nombre = getattr(self.request.user.rol, 'nombre', '') if not self.request.user.is_anonymous else ''
+        if not self.request.user.is_staff and rol_nombre in ['Tutor', 'Paciente']:
+            return TutorReporteSesionSerializer
+        
         if self.action in ['create', 'update', 'partial_update']:
-            from api.serializers import ReporteSesionWriteSerializer
             return ReporteSesionWriteSerializer
         return ReporteSesionSerializer
 
@@ -415,50 +506,43 @@ class BitacoraSeguridadViewSet(viewsets.ReadOnlyModelViewSet):
 @extend_schema(tags=['Usuarios'])
 @api_view(['POST'])
 def login_view(request):
-    email = request.data.get('email')
-    password = request.data.get('password')
-    
-    if not email or not password:
-        return Response({"error": "Correo y contraseña son requeridos."}, status=status.HTTP_400_BAD_REQUEST)
-        
-    try:
-        user = Usuario.objects.get(email=email)
-        if not user.activo:
-            # Same generic message to prevent account enumeration
-            return Response({"error": "Credenciales inválidas."}, status=status.HTTP_401_UNAUTHORIZED)
-            
-        if check_password(password, user.password):
-            # Usar el ID del usuario como token temporal para evitar errores de compatibilidad con DRF Token
-            # que requiere que el modelo herede de AbstractUser
-            token_key = str(user.id).replace('-', '') 
-            return Response({
-                "message": "Login exitoso",
-                "token": token_key,
-                "user": {
-                    "id": str(user.id),
-                    "nombre": user.nombre_completo,
-                    "email": user.email,
-                    "rol": user.rol.nombre
-                }
-            })
-        else:
-            return Response({"error": "Credenciales inválidas."}, status=status.HTTP_401_UNAUTHORIZED)
-            
-    except Usuario.DoesNotExist:
-        # Same message + same status to prevent timing-based enumeration
-        return Response({"error": "Credenciales inválidas."}, status=status.HTTP_401_UNAUTHORIZED)
+    """
+    Login endpoint — devuelve access_token (JWT 12h) + refresh_token (7d).
+    El payload incluye 'rol' y 'redirect_to' para que Next.js sepa
+    a qué dashboard redirigir sin necesitar otra petición al backend.
+    """
+    from api.jwt_serializers import CuadraTokenObtainPairSerializer
+    serializer = CuadraTokenObtainPairSerializer(data=request.data)
+    if serializer.is_valid():
+        data = serializer.validated_data
+        return Response({
+            "message": "Login exitoso",
+            "access":  data['access'],
+            "refresh": data['refresh'],
+            "user":    data['user'],
+        }, status=status.HTTP_200_OK)
+    # Aplanar errores del serializer en un solo string legible
+    errors = serializer.errors
+    detail = errors.get('detail') or errors.get('non_field_errors') or str(errors)
+    if isinstance(detail, list):
+        detail = detail[0]
+    return Response({"error": str(detail)}, status=status.HTTP_401_UNAUTHORIZED)
 
 @extend_schema(tags=['Usuarios'])
 @api_view(['POST', 'PUT', 'PATCH'])
 def registrar_terapeuta(request, pk=None):
     try:
+        import string
+        def cap(v): return string.capwords(v.strip()) if v and isinstance(v, str) else v
+        def cap_sentence(v): return (v.strip()[0].upper() + v.strip()[1:]) if v and isinstance(v, str) and v.strip() else v
+
         # Si hay PK, es una actualización
         if request.method in ['PUT', 'PATCH']:
             terapeuta = Terapeuta.objects.get(id=pk)
             usuario = terapeuta.usuario
             
             # Actualizar Usuario
-            usuario.nombre_completo = request.data.get('nombre', usuario.nombre_completo)
+            usuario.nombre_completo = cap(request.data.get('nombre', usuario.nombre_completo))
             usuario.email = request.data.get('email', usuario.email)
             usuario.telefono = request.data.get('telefono', usuario.telefono)
             if request.data.get('password'):
@@ -466,47 +550,62 @@ def registrar_terapeuta(request, pk=None):
             usuario.save()
 
             # Actualizar Terapeuta
-            especialidad_id = request.data.get('especialidad_id')
-            if especialidad_id:
-                terapeuta.especialidad = CatalogoEspecialidad.objects.get(id=especialidad_id)
+            terapeuta.carrera = cap(request.data.get('carrera', terapeuta.carrera))
+            terapeuta.especialidad_text = cap_sentence(request.data.get('especialidad_text', terapeuta.especialidad_text))
             
+            rfc_val = request.data.get('rfc', terapeuta.rfc)
+            terapeuta.rfc = rfc_val.upper() if rfc_val else rfc_val
+            
+            terapeuta.contacto_emergencia = cap(request.data.get('contacto_emergencia', terapeuta.contacto_emergencia))
             terapeuta.cedula_profesional = request.data.get('cedula', terapeuta.cedula_profesional)
-            terapeuta.biografia = request.data.get('biografia', terapeuta.biografia)
+            terapeuta.biografia = cap_sentence(request.data.get('biografia', terapeuta.biografia))
+            
             if 'disponible' in request.data:
                 terapeuta.disponible = request.data.get('disponible')
             terapeuta.save()
 
             return Response({"message": "Terapeuta actualizado exitosamente."})
 
-        # Si no, es creación (código original)
-        nombre = request.data.get('nombre')
+        # Si no, es creación — envuelto en transacción atómica
+        nombre = cap(request.data.get('nombre'))
         email = request.data.get('email')
         telefono = request.data.get('telefono')
         password = request.data.get('password')
-        especialidad_id = request.data.get('especialidad_id')
+        
+        carrera = cap(request.data.get('carrera', ''))
+        especialidad_text = cap_sentence(request.data.get('especialidad_text', ''))
+        rfc = request.data.get('rfc', '').upper()
+        contacto_emergencia = cap(request.data.get('contacto_emergencia', ''))
+        
         cedula = request.data.get('cedula', '')
-        biografia = request.data.get('biografia', '')
+        biografia = cap_sentence(request.data.get('biografia', ''))
 
         if Usuario.objects.filter(email=email).exists():
             return Response({"error": "El correo ya está registrado."}, status=status.HTTP_400_BAD_REQUEST)
 
-        rol_terapeuta, _ = Rol.objects.get_or_create(nombre='Terapeuta')
-        
-        usuario = Usuario.objects.create(
-            rol=rol_terapeuta,
-            email=email,
-            password=make_password(password),
-            nombre_completo=nombre,
-            telefono=telefono
-        )
+        if rfc and Terapeuta.objects.filter(rfc__iexact=rfc).exists():
+            return Response({"error": f"El RFC '{rfc}' ya pertenece a otro terapeuta."}, status=status.HTTP_400_BAD_REQUEST)
 
-        especialidad = CatalogoEspecialidad.objects.get(id=especialidad_id)
-        terapeuta = Terapeuta.objects.create(
-            usuario=usuario,
-            especialidad=especialidad,
-            cedula_profesional=cedula,
-            biografia=biografia
-        )
+        # TAREA 1: transaction.atomic garantiza cero usuarios huérfanos.
+        # Si falla el INSERT de Terapeuta, el Usuario se revierte automáticamente.
+        with transaction.atomic():
+            rol_terapeuta, _ = Rol.objects.get_or_create(nombre='Terapeuta')
+            usuario = Usuario.objects.create(
+                rol=rol_terapeuta,
+                email=email,
+                password=make_password(password),
+                nombre_completo=nombre,
+                telefono=telefono
+            )
+            terapeuta = Terapeuta.objects.create(
+                usuario=usuario,
+                carrera=carrera,
+                especialidad_text=especialidad_text,
+                rfc=rfc,
+                contacto_emergencia=contacto_emergencia,
+                cedula_profesional=cedula,
+                biografia=biografia
+            )
 
         return Response({"message": "Terapeuta creado exitosamente.", "id": str(terapeuta.id)}, status=status.HTTP_201_CREATED)
     except Exception as e:
@@ -530,91 +629,108 @@ def resetear_password(request, usuario_id):
 
 @extend_schema(tags=['Pacientes'])
 @api_view(['POST'])
+@authentication_classes([])   # El admin ya está protegido por el routing del frontend
+@permission_classes([AllowAny])
 def registrar_paciente(request):
+    """
+    TAREA 1: Transacción atómica.
+    La creación de Usuario (Tutor/Paciente) + Paciente ocurre en un solo bloque.
+    Si Paciente.create() falla por cualquier motivo, el Usuario se revierte
+    automáticamente → cero usuarios huérfanos en base de datos.
+    """
     try:
+        import re as _re
+        def _cap(v):
+            """Capitaliza primera letra de cada palabra — soporta acentos españoles."""
+            if not v or not isinstance(v, str): return v
+            return _re.sub(r"(?<!\w)(\w)", lambda m: m.group(1).upper(), v.strip())
+        def _csnt(v):
+            """Capitaliza solo la primera letra de la oración."""
+            v = (v or '').strip()
+            return v[0].upper() + v[1:] if v else v
+
         es_mayor_de_edad = str(request.data.get('es_mayor_de_edad', 'false')).lower() == 'true'
-        paciente_nombre = request.data.get('paciente_nombre')
-        fecha_nacimiento = request.data.get('fecha_nacimiento')
-        peso_kg = request.data.get('peso_kg')
-        estado_civil = request.data.get('estado_civil')
-        ocupacion_escolaridad = request.data.get('ocupacion_escolaridad')
-        direccion = request.data.get('direccion')
-        contacto_emergencia = request.data.get('contacto_emergencia')
-        motivo_consulta = request.data.get('motivo_consulta')
-        historial_medico = request.data.get('historial_medico')
-        antecedentes_familiares = request.data.get('antecedentes_familiares')
+        paciente_nombre        = _cap(request.data.get('paciente_nombre'))
+        fecha_nacimiento       = request.data.get('fecha_nacimiento')
+        peso_kg                = request.data.get('peso_kg')
+        estado_civil           = _cap(request.data.get('estado_civil'))
+        ocupacion_escolaridad  = _csnt(request.data.get('ocupacion_escolaridad'))
+        direccion              = _cap(request.data.get('direccion'))
+        contacto_emergencia    = _cap(request.data.get('contacto_emergencia'))
+        motivo_consulta        = _csnt(request.data.get('motivo_consulta'))
+        historial_medico       = _csnt(request.data.get('historial_medico'))
+        antecedentes_familiares= _csnt(request.data.get('antecedentes_familiares'))
+        tutor_nombre           = _cap(request.data.get('tutor_nombre'))
+        tutor_email            = request.data.get('tutor_email')
+        tutor_telefono         = request.data.get('tutor_telefono')
+        tutor_password         = request.data.get('tutor_password')
+        tutor2_nombre          = _cap(request.data.get('tutor2_nombre'))
+        tutor2_telefono        = request.data.get('tutor2_telefono')
 
-        tutor_nombre = request.data.get('tutor_nombre')
-        tutor_email = request.data.get('tutor_email')
-        tutor_telefono = request.data.get('tutor_telefono')
-        tutor_password = request.data.get('tutor_password')
-        
-        tutor2_nombre = request.data.get('tutor2_nombre')
-        tutor2_telefono = request.data.get('tutor2_telefono')
-
-        # Convertir peso a float si viene como string
         try:
-            if peso_kg:
-                peso_kg = float(peso_kg)
+            peso_kg = float(peso_kg) if peso_kg else 0.0
         except (ValueError, TypeError):
             peso_kg = 0.0
 
+        # Validaciones previas (antes de abrir la transacción)
         if not all([paciente_nombre, fecha_nacimiento]):
             return Response({"error": "Faltan campos obligatorios: nombre y fecha de nacimiento."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not es_mayor_de_edad and not all([tutor_email]):
+        if not es_mayor_de_edad and not tutor_email:
             return Response({"error": "Faltan campos obligatorios: email del tutor."}, status=status.HTTP_400_BAD_REQUEST)
-        
         if es_mayor_de_edad and not tutor_email:
-             return Response({"error": "Debe proporcionar un email para el paciente."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Debe proporcionar un email para el paciente."}, status=status.HTTP_400_BAD_REQUEST)
 
-        cuenta_email = tutor_email
-        cuenta_nombre = paciente_nombre if es_mayor_de_edad else (tutor_nombre or "Tutor de " + paciente_nombre)
+        # Prevención de duplicados: No permitir registrar si ya existe el mismo nombre y fecha de nacimiento
+        if Paciente.objects.filter(nombre__iexact=paciente_nombre, fecha_nacimiento=fecha_nacimiento).exists():
+            return Response({"error": f"Ya existe un paciente con el nombre '{paciente_nombre}' y la misma fecha de nacimiento."}, status=status.HTTP_400_BAD_REQUEST)
+
+        cuenta_email    = tutor_email
+        cuenta_nombre   = paciente_nombre if es_mayor_de_edad else (tutor_nombre or "Tutor de " + paciente_nombre)
         cuenta_telefono = tutor_telefono
-        cuenta_password = tutor_password or "cuadra123" # Password por defecto si no viene
+        cuenta_password = tutor_password or "cuadra123"
 
-        usuario_tutor = Usuario.objects.filter(email=cuenta_email).first()
+        # ── BLOQUE ATÓMICO ────────────────────────────────────────────────────
+        with transaction.atomic():
+            usuario_tutor = Usuario.objects.filter(email=cuenta_email).first()
 
-        if not usuario_tutor:
-            nombre_rol = 'Paciente' if es_mayor_de_edad else 'Tutor'
-            rol_obj, _ = Rol.objects.get_or_create(nombre=nombre_rol)
-            
-            usuario_tutor = Usuario.objects.create(
-                rol=rol_obj,
-                email=cuenta_email,
-                password=make_password(cuenta_password),
-                nombre_completo=cuenta_nombre,
-                telefono=cuenta_telefono
+            if not usuario_tutor:
+                nombre_rol = 'Paciente' if es_mayor_de_edad else 'Tutor'
+                rol_obj, _ = Rol.objects.get_or_create(nombre=nombre_rol)
+                usuario_tutor = Usuario.objects.create(
+                    rol=rol_obj,
+                    email=cuenta_email,
+                    password=make_password(cuenta_password),
+                    nombre_completo=cuenta_nombre,
+                    telefono=cuenta_telefono
+                )
+
+            paciente = Paciente.objects.create(
+                tutor=usuario_tutor,
+                nombre=paciente_nombre,
+                fecha_nacimiento=fecha_nacimiento,
+                peso_kg=peso_kg,
+                es_mayor_de_edad=es_mayor_de_edad,
+                estado_civil=estado_civil,
+                ocupacion_escolaridad=ocupacion_escolaridad,
+                direccion=direccion,
+                contacto_emergencia=contacto_emergencia,
+                tutor_secundario_nombre=tutor2_nombre,
+                tutor_secundario_telefono=tutor2_telefono,
+                motivo_consulta=motivo_consulta,
+                historial_medico=historial_medico,
+                antecedentes_familiares=antecedentes_familiares
             )
-
-        paciente = Paciente.objects.create(
-            tutor=usuario_tutor,
-            nombre=paciente_nombre,
-            fecha_nacimiento=fecha_nacimiento,
-            peso_kg=peso_kg,
-            es_mayor_de_edad=es_mayor_de_edad,
-            estado_civil=estado_civil,
-            ocupacion_escolaridad=ocupacion_escolaridad,
-            direccion=direccion,
-            contacto_emergencia=contacto_emergencia,
-            tutor_secundario_nombre=tutor2_nombre,
-            tutor_secundario_telefono=tutor2_telefono,
-            motivo_consulta=motivo_consulta,
-            historial_medico=historial_medico,
-            antecedentes_familiares=antecedentes_familiares
-        )
+        # ── FIN BLOQUE ATÓMICO ────────────────────────────────────────────────
 
         return Response({
             "message": "Expediente registrado exitosamente.",
             "id": str(paciente.id),
-            "paciente": {
-                "nombre": paciente.nombre,
-                "id": str(paciente.id)
-            }
+            "paciente": {"nombre": paciente.nombre, "id": str(paciente.id)}
         }, status=status.HTTP_201_CREATED)
+
     except Exception as e:
         import traceback
-        print(traceback.format_exc()) # Log para nosotros
+        print(traceback.format_exc())
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @extend_schema(tags=['Usuarios'])

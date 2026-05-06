@@ -17,7 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
-from rest_framework.authtoken.views import obtain_auth_token
+from rest_framework_simplejwt.views import TokenRefreshView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -25,9 +25,11 @@ urlpatterns = [
     # API REST
     path('api/', include('api.urls')),
 
-    # Autenticación
+    # Autenticación DRF browsable
     path('api-auth/', include('rest_framework.urls')),
-    path('api/token-auth/', obtain_auth_token, name='api_token_auth'),
+
+    # JWT: renovar access token con el refresh token
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
     # Documentación Swagger/OpenAPI (drf-spectacular)
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

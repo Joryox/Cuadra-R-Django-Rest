@@ -49,6 +49,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework.authtoken',
+    'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'drf_spectacular',
     'django_filters',
@@ -160,10 +162,12 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Django REST Framework Configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
+        # SimpleJWT es el autenticador principal para las rutas protegidas
+        'api.authentication.CuadraJWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
+        # AllowAny por defecto: cada ViewSet declara sus propios permisos
         'rest_framework.permissions.AllowAny',
     ],
     # 'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
@@ -179,6 +183,31 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.BrowsableAPIRenderer',
     ],
     'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler',
+}
+
+# ==============================================
+# SimpleJWT Configuration
+# ==============================================
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    # Access token: 12 horas (sesión de trabajo del día)
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=12),
+    # Refresh token: 7 días (recordar al usuario una semana)
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,          # Emite un nuevo refresh en cada uso
+    'BLACKLIST_AFTER_ROTATION': True,       # Invalida el refresh anterior
+    'UPDATE_LAST_LOGIN': False,
+
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'AUTH_HEADER_TYPES': ('Bearer',),       # Cabecera: Authorization: Bearer <token>
+    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+
+    # Token serializer personalizado: inyecta 'rol' y 'nombre' en el payload
+    'TOKEN_OBTAIN_SERIALIZER': 'api.jwt_serializers.CuadraTokenObtainPairSerializer',
 }
 
 # CORS Configuration

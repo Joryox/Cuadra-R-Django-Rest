@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from api.views import *
 
-router = DefaultRouter()
+router = DefaultRouter(trailing_slash=False)
 
 # Catálogos
 router.register(r'roles', RolViewSet)
@@ -31,14 +31,14 @@ router.register(r'bitacora-seguridad', BitacoraSeguridadViewSet)
 
 
 urlpatterns = [
-    path('login/', login_view, name='api-login'),
-    path('terapeutas/registrar/', registrar_terapeuta, name='api-registrar-terapeuta'),
-    path('terapeutas/registrar/<uuid:pk>/', registrar_terapeuta, name='api-actualizar-terapeuta'),
-    path('pacientes/registrar/', registrar_paciente, name='api-registrar-paciente'),
-    path('usuarios/<uuid:usuario_id>/reset-password/', resetear_password, name='api-reset-password'),
-    path('usuarios/<uuid:usuario_id>/profile/', update_profile, name='api-update-profile'),
-    path('usuarios/<uuid:usuario_id>/change-password/', change_password, name='api-change-password'),
-    path('dashboard-stats/', dashboard_stats, name='api-dashboard-stats'),
+    path('login', login_view, name='api-login'),
+    path('terapeutas/registrar', registrar_terapeuta, name='api-registrar-terapeuta'),
+    path('terapeutas/registrar/<uuid:pk>', registrar_terapeuta, name='api-actualizar-terapeuta'),
+    path('pacientes/registrar', registrar_paciente, name='api-registrar-paciente'),
+    path('usuarios/<uuid:usuario_id>/reset-password', resetear_password, name='api-reset-password'),
+    path('usuarios/<uuid:usuario_id>/profile', update_profile, name='api-update-profile'),
+    path('usuarios/<uuid:usuario_id>/change-password', change_password, name='api-change-password'),
+    path('dashboard-stats', dashboard_stats, name='api-dashboard-stats'),
 
     path('', include(router.urls)),
 ]

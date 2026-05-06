@@ -63,14 +63,17 @@ class CatalogoParentesco(models.Model):
 class Terapeuta(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     usuario = models.OneToOneField(Usuario, on_delete=models.PROTECT)
-    especialidad = models.ForeignKey(CatalogoEspecialidad, on_delete=models.PROTECT)
+    carrera = models.CharField(max_length=255, blank=True, null=True)
+    especialidad_text = models.CharField(max_length=255, blank=True, null=True)
+    rfc = models.CharField(max_length=20, blank=True, null=True)
+    contacto_emergencia = models.CharField(max_length=255, blank=True, null=True)
     cedula_profesional = models.CharField(max_length=50, blank=True, null=True)
     biografia = models.TextField(blank=True, null=True)
     disponible = models.BooleanField(default=True)  # Switch: vacaciones/fuera de servicio
     fecha_registro = models.DateField(auto_now_add=True, null=True, blank=True)
 
     def __str__(self):
-        return f"{self.usuario.nombre_completo} - {self.especialidad.nombre}"
+        return f"{self.usuario.nombre_completo} - {self.especialidad_text or self.carrera}"
 
 # ==========================================
 # MÓDULO 5: ACTIVOS Y BIENESTAR ANIMAL

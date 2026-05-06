@@ -7,6 +7,28 @@ from api.models import (
     ContactoEmergencia, Sesion, ReporteSesion, ReporteObjetivo, Pago,
     BitacoraSeguridad
 )
+import string
+
+# ── Utilidad de capitalización ───────────────────────────────────────────────
+def cap(value):
+    """
+    Capitaliza la primera letra de cada palabra.
+    'juan perez' → 'Juan Perez'
+    Preserva mayúsculas ya existentes (no lowercasea todo).
+    """
+    if not value or not isinstance(value, str):
+        return value
+    return string.capwords(value.strip())
+
+def cap_sentence(value):
+    """
+    Capitaliza sólo la primera letra de la oración (para notas/descripciones).
+    'diagnóstico: tda' → 'Diagnóstico: tda'
+    """
+    if not value or not isinstance(value, str):
+        return value
+    v = value.strip()
+    return v[0].upper() + v[1:] if v else v
 
 # --- Catálogos ---
 class RolSerializer(serializers.ModelSerializer):
@@ -61,11 +83,21 @@ class UsuarioSerializer(serializers.ModelSerializer):
         fields = '__all__'
         extra_kwargs = {'password': {'write_only': True}}
 
+    def validate_nombre_completo(self, v): return cap(v)
+    def validate_direccion(self, v):      return cap(v)
+
 class TerapeutaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Terapeuta
         fields = '__all__'
         depth = 1
+
+    def validate_nombre_completo(self, v): return cap(v)
+    def validate_carrera(self, v): return cap(v)
+    def validate_especialidad_text(self, v): return cap_sentence(v)
+    def validate_contacto_emergencia(self, v): return cap(v)
+    def validate_rfc(self, v): return v.upper() if v else v
+    def validate_biografia(self, v): return cap_sentence(v)
 
 class CaballoSerializer(serializers.ModelSerializer):
     ultimo_evento = serializers.SerializerMethodField()
@@ -90,6 +122,10 @@ class CaballoWriteSerializer(serializers.ModelSerializer):
         model = Caballo
         fields = '__all__'
 
+    def validate_nombre(self, v): return cap(v)
+    def validate_raza(self, v):   return cap(v)
+    def validate_tipo(self, v):   return cap(v)
+
 class BitacoraEquinaSerializer(serializers.ModelSerializer):
     class Meta:
         model = BitacoraEquina
@@ -101,6 +137,8 @@ class BitacoraEquinaWriteSerializer(serializers.ModelSerializer):
         model = BitacoraEquina
         fields = '__all__'
 
+    def validate_descripcion_veterinaria(self, v): return cap_sentence(v)
+
 class PacienteSerializer(serializers.ModelSerializer):
     tutor_nombre = serializers.CharField(source='tutor.nombre_completo', read_only=True)
     
@@ -108,6 +146,14 @@ class PacienteSerializer(serializers.ModelSerializer):
         model = Paciente
         fields = '__all__'
         depth = 1
+
+    def validate_nombre(self, v):                  return cap(v)
+    def validate_direccion(self, v):               return cap(v)
+    def validate_ocupacion_escolaridad(self, v):   return cap_sentence(v)
+    def validate_motivo_consulta(self, v):         return cap_sentence(v)
+    def validate_historial_medico(self, v):        return cap_sentence(v)
+    def validate_antecedentes_familiares(self, v): return cap_sentence(v)
+    def validate_contacto_emergencia(self, v):     return cap(v)
 
 class PacienteDiagnosticoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -140,6 +186,13 @@ class ReporteSesionWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = ReporteSesion
         fields = '__all__'
+
+class TutorReporteSesionSerializer(serializers.ModelSerializer):
+    """Serializador para familias."""
+    class Meta:
+        model = ReporteSesion
+        fields = '__all__'
+        depth = 1
 
 
 class ReporteObjetivoSerializer(serializers.ModelSerializer):
