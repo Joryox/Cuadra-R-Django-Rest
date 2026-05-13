@@ -25,6 +25,10 @@ class Usuario(models.Model):
         return True
 
     @property
+    def is_staff(self):
+        return self.rol.nombre == 'Admin'
+
+    @property
     def is_anonymous(self):
         return False
 
@@ -103,14 +107,15 @@ class Caballo(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     nombre = models.CharField(max_length=100)
     estado_salud = models.ForeignKey(CatalogoEstadoCaballo, on_delete=models.PROTECT)
-    peso_max_soporta = models.DecimalField(max_digits=5, decimal_places=2) # En kg
+    peso_max_soporta = models.DecimalField(max_digits=5, decimal_places=2)
     sesiones_semanales_max = models.IntegerField()
     raza = models.CharField(max_length=100, blank=True, null=True)
     tipo = models.CharField(max_length=100, blank=True, null=True)
-    activo = models.BooleanField(default=True)  # Archivado (borrado lógico)
-    disponible = models.BooleanField(default=True)  # Switch: descanso
+    activo = models.BooleanField(default=True)
+    disponible = models.BooleanField(default=True)
     fecha_registro = models.DateField(auto_now_add=True, null=True, blank=True)
     motivo_inactividad = models.CharField(max_length=255, blank=True, null=True)
+    foto_perfil = models.ImageField(upload_to='caballos/', blank=True, null=True)
 
     def __str__(self):
         return self.nombre
@@ -176,7 +181,9 @@ class Sesion(models.Model):
     terapeuta = models.ForeignKey(Terapeuta, on_delete=models.PROTECT)
     caballo = models.ForeignKey(Caballo, on_delete=models.PROTECT)
     fecha_hora = models.DateTimeField()
+    duracion_minutos = models.PositiveIntegerField(default=60, help_text="Duración de la sesión en minutos")
     estatus = models.ForeignKey(CatalogoEstadoSesion, on_delete=models.PROTECT)
+    archivada = models.BooleanField(default=False, help_text="Borrado lógico")
 
     def __str__(self):
         return f"Sesion: {self.paciente.nombre} - {self.fecha_hora.strftime('%d/%m/%Y')}"

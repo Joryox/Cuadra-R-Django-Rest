@@ -41,6 +41,7 @@ urlpatterns = [
     path('usuarios/<uuid:usuario_id>/profile', update_profile, name='api-update-profile'),
     path('usuarios/<uuid:usuario_id>/change-password', change_password, name='api-change-password'),
     path('dashboard-stats', dashboard_stats, name='api-dashboard-stats'),
+    path('caballo-disponibilidad', caballo_disponibilidad, name='api-caballo-disponibilidad'),
 
     path('', include(router.urls)),
 ]

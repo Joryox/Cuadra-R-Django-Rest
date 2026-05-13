@@ -171,6 +171,21 @@ class UsuarioViewSet(viewsets.ModelViewSet):
     serializer_class = UsuarioSerializer
     permission_classes = [AllowAny]
 
+    from rest_framework.decorators import action as drf_action
+
+    @drf_action(detail=True, methods=['post'], url_path='cambiar-contrasena')
+    def cambiar_contrasena(self, request, pk=None):
+        usuario = self.get_object()
+        actual = request.data.get('password_actual', '')
+        nueva = request.data.get('password_nueva', '')
+        if not check_password(actual, usuario.password):
+            return Response({'error': 'Contraseña actual incorrecta.'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(nueva) < 8:
+            return Response({'error': 'La nueva contraseña debe tener al menos 8 caracteres.'}, status=status.HTTP_400_BAD_REQUEST)
+        usuario.password = make_password(nueva)
+        usuario.save()
+        return Response({'message': 'Contraseña actualizada correctamente.'})
+
 @extend_schema_view(
     list=extend_schema(tags=['Usuarios']),
     retrieve=extend_schema(tags=['Usuarios']),
@@ -286,9 +301,20 @@ class PacienteViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        if self.request.user.rol.nombre in ['Tutor', 'Paciente']:
-            return qs.filter(tutor=self.request.user)
-        return qs
+        rol = getattr(self.request.user, 'rol', None)
+        rol_nombre = getattr(rol, 'nombre', '') if rol else ''
+
+        # Tutores solo ven sus propios pacientes
+        if rol_nombre in ['Tutor', 'Paciente']:
+            return qs.filter(tutor=self.request.user, activo=True)
+
+        # Admin puede ver inactivos con ?activo=false
+        activo_param = self.request.query_params.get('activo', 'true')
+        if activo_param.lower() == 'false':
+            return qs.filter(activo=False)
+
+        # Por defecto, terapeuta y admin solo ven activos
+        return qs.filter(activo=True)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -346,6 +372,13 @@ class SesionViewSet(viewsets.ModelViewSet):
             elif rol_nombre in ['Tutor', 'Paciente']:
                 qs = qs.filter(paciente__tutor=self.request.user)
 
+        # Filtro de archivadas (borrado lógico)
+        archivada_param = self.request.query_params.get('archivada')
+        if archivada_param == 'true':
+            qs = qs.filter(archivada=True)
+        else:
+            qs = qs.filter(archivada=False)
+
         fecha = self.request.query_params.get('fecha')
         if fecha:
             qs = qs.filter(fecha_hora__date=fecha)
@@ -362,14 +395,19 @@ class SesionViewSet(viewsets.ModelViewSet):
         """
         Validaciones previas al guardar una sesión:
           1. Bienestar Animal: estado Activo + límite de peso.
-          2. TAREA 3 — Anti-colisión: caballo y terapeuta libres en ese horario.
+          2. Anti-colisión con duración: caballo y terapeuta libres en ese rango de tiempo.
+          3. Límite semanal de sesiones del caballo (máx 10/semana).
         Se consideran en conflicto las sesiones con estatus 'Programada' o 'En Curso'.
-        Sesiones 'Cancelada' o 'Finalizada' liberan el recurso.
         """
-        caballo_id  = request.data.get('caballo')
-        paciente_id = request.data.get('paciente')
+        from datetime import timedelta as td
+        from django.utils.timezone import make_aware
+        import pytz
+
+        caballo_id   = request.data.get('caballo')
+        paciente_id  = request.data.get('paciente')
         terapeuta_id = request.data.get('terapeuta')
-        fecha_hora  = request.data.get('fecha_hora')
+        fecha_hora   = request.data.get('fecha_hora')
+        duracion_min = int(request.data.get('duracion_minutos', 60))
 
         try:
             caballo  = Caballo.objects.get(id=caballo_id)
@@ -389,38 +427,152 @@ class SesionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # ── Regla 2: Anti-Colisión de Horarios (TAREA 3) ─────────────────────
+        # ── Regla 2: Anti-Colisión con Duración ──────────────────────────────
         if fecha_hora:
-            # Estatus que bloquean el recurso (ocupado)
-            estatus_bloqueantes = CatalogoEstadoSesion.objects.filter(
-                nombre__in=['Programada', 'En Curso']
-            ).values_list('id', flat=True)
+            from dateutil import parser as dp
+            try:
+                inicio_nueva = dp.parse(fecha_hora)
+            except Exception:
+                inicio_nueva = None
 
-            # ¿El caballo ya tiene sesión activa en esa fecha/hora?
-            conflicto_caballo = Sesion.objects.filter(
-                caballo_id=caballo_id,
-                fecha_hora=fecha_hora,
-                estatus_id__in=estatus_bloqueantes
-            ).exists()
-            if conflicto_caballo:
-                return Response(
-                    {"error": f"{caballo.nombre} ya está asignado a otra sesión en ese horario."},
-                    status=status.HTTP_409_CONFLICT
+            if inicio_nueva:
+                fin_nueva = inicio_nueva + td(minutes=duracion_min)
+
+                estatus_bloqueantes = CatalogoEstadoSesion.objects.filter(
+                    nombre__in=['Programada', 'En Curso']
+                ).values_list('id', flat=True)
+
+                # Sesiones del caballo que se solapan: [ini, fin) se cruza con [ini_nueva, fin_nueva)
+                conflictos_caballo = Sesion.objects.filter(
+                    caballo_id=caballo_id,
+                    estatus_id__in=estatus_bloqueantes,
+                ).exclude(id=request.data.get('exclude_id', None))
+
+                for s in conflictos_caballo:
+                    ini_s = s.fecha_hora
+                    fin_s = ini_s + td(minutes=s.duracion_minutos)
+                    if ini_s < fin_nueva and fin_s > inicio_nueva:
+                        ini_fmt = ini_s.strftime("%H:%M")
+                        fin_fmt = fin_s.strftime("%H:%M")
+                        return Response(
+                            {"error": f"🐴 {caballo.nombre} estará ocupado de {ini_fmt} a {fin_fmt}. "
+                                      f"Por favor elige otro horario, fecha o caballo."},
+                            status=status.HTTP_409_CONFLICT
+                        )
+
+                # Conflicto de terapeuta (mismo esquema)
+                conflictos_terapeuta = Sesion.objects.filter(
+                    terapeuta_id=terapeuta_id,
+                    estatus_id__in=estatus_bloqueantes,
                 )
+                for s in conflictos_terapeuta:
+                    ini_s = s.fecha_hora
+                    fin_s = ini_s + td(minutes=s.duracion_minutos)
+                    if ini_s < fin_nueva and fin_s > inicio_nueva:
+                        return Response(
+                            {"error": "El terapeuta ya tiene otra sesión en ese horario."},
+                            status=status.HTTP_409_CONFLICT
+                        )
 
-            # ¿El terapeuta ya tiene sesión activa en esa fecha/hora?
-            conflicto_terapeuta = Sesion.objects.filter(
-                terapeuta_id=terapeuta_id,
-                fecha_hora=fecha_hora,
-                estatus_id__in=estatus_bloqueantes
-            ).exists()
-            if conflicto_terapeuta:
+        # ── Regla 3: Límite semanal del caballo (máx 10/semana) ──────────────
+        if fecha_hora:
+            from dateutil import parser as dp2
+            try:
+                d = dp2.parse(fecha_hora)
+            except Exception:
+                d = timezone.now()
+            # Inicio de semana (lunes)
+            inicio_semana = d - td(days=d.weekday())
+            inicio_semana = inicio_semana.replace(hour=0, minute=0, second=0, microsecond=0)
+            fin_semana    = inicio_semana + td(days=7)
+
+            sesiones_semana = Sesion.objects.filter(
+                caballo_id=caballo_id,
+                fecha_hora__gte=inicio_semana,
+                fecha_hora__lt=fin_semana,
+            ).exclude(estatus__nombre__in=['Cancelada']).count()
+
+            max_semana = getattr(caballo, 'sesiones_semanales_max', 10) or 10
+            if sesiones_semana >= max_semana:
                 return Response(
-                    {"error": "El terapeuta ya está ocupado en ese horario."},
+                    {"error": f"🐴 {caballo.nombre} ya alcanzó su límite de {max_semana} sesiones esta semana. "
+                              f"Por favor elige otro caballo u otra semana."},
                     status=status.HTTP_409_CONFLICT
                 )
 
         return super().create(request, *args, **kwargs)
+
+
+# ── Verificar disponibilidad de caballo (usado por el frontend) ──────────────
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def caballo_disponibilidad(request):
+    """
+    GET /api/caballo-disponibilidad/?caballo_id=X&fecha=YYYY-MM-DD&hora=HH:MM&duracion=60
+    Retorna: { disponible, ocupado_de, ocupado_hasta, sesiones_semana, max_semana, porcentaje_carga }
+    """
+    from datetime import timedelta as td
+    from dateutil import parser as dp
+
+    caballo_id = request.query_params.get('caballo_id')
+    fecha      = request.query_params.get('fecha')
+    hora       = request.query_params.get('hora', '09:00')
+    duracion   = int(request.query_params.get('duracion', 60))
+
+    if not caballo_id:
+        return Response({"error": "Se requiere caballo_id"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        caballo = Caballo.objects.get(id=caballo_id)
+    except Caballo.DoesNotExist:
+        return Response({"error": "Caballo no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+
+    # Sesiones de esta semana
+    hoy = timezone.now()
+    inicio_semana = hoy - td(days=hoy.weekday())
+    inicio_semana = inicio_semana.replace(hour=0, minute=0, second=0, microsecond=0)
+    fin_semana    = inicio_semana + td(days=7)
+
+    sesiones_semana = Sesion.objects.filter(
+        caballo_id=caballo_id,
+        fecha_hora__gte=inicio_semana,
+        fecha_hora__lt=fin_semana,
+    ).exclude(estatus__nombre__in=['Cancelada']).count()
+
+    max_semana = getattr(caballo, 'sesiones_semanales_max', 10) or 10
+    porcentaje = round((sesiones_semana / max_semana) * 100, 1) if max_semana > 0 else 0
+
+    resp = {
+        "disponible": True,
+        "ocupado_de": None,
+        "ocupado_hasta": None,
+        "sesiones_semana": sesiones_semana,
+        "max_semana": max_semana,
+        "porcentaje_carga": porcentaje,
+        "alcanzado_limite": sesiones_semana >= max_semana,
+    }
+
+    if fecha and hora:
+        try:
+            inicio_nueva = dp.parse(f"{fecha}T{hora}:00")
+            fin_nueva    = inicio_nueva + td(minutes=duracion)
+
+            estatus_bloq = CatalogoEstadoSesion.objects.filter(
+                nombre__in=['Programada', 'En Curso']
+            ).values_list('id', flat=True)
+
+            for s in Sesion.objects.filter(caballo_id=caballo_id, estatus_id__in=estatus_bloq):
+                ini_s = s.fecha_hora
+                fin_s = ini_s + td(minutes=s.duracion_minutos)
+                if ini_s < fin_nueva and fin_s > inicio_nueva:
+                    resp["disponible"] = False
+                    resp["ocupado_de"]    = ini_s.strftime("%H:%M")
+                    resp["ocupado_hasta"] = fin_s.strftime("%H:%M")
+                    break
+        except Exception:
+            pass
+
+    return Response(resp)
 
 @extend_schema_view(
     list=extend_schema(tags=['Sesiones']),

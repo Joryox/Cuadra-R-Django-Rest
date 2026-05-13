@@ -101,6 +101,8 @@ class TerapeutaSerializer(serializers.ModelSerializer):
 
 class CaballoSerializer(serializers.ModelSerializer):
     ultimo_evento = serializers.SerializerMethodField()
+    sesiones_semana_actuales = serializers.SerializerMethodField()
+    porcentaje_carga = serializers.SerializerMethodField()
 
     class Meta:
         model = Caballo
@@ -116,6 +118,23 @@ class CaballoSerializer(serializers.ModelSerializer):
                 "fecha": evento.fecha_registro.strftime("%Y-%m-%d")
             }
         return None
+
+    def get_sesiones_semana_actuales(self, obj):
+        from django.utils import timezone
+        from datetime import timedelta
+        hoy = timezone.now()
+        inicio = hoy - timedelta(days=hoy.weekday())
+        inicio = inicio.replace(hour=0, minute=0, second=0, microsecond=0)
+        fin = inicio + timedelta(days=7)
+        return obj.sesion_set.filter(
+            fecha_hora__gte=inicio,
+            fecha_hora__lt=fin,
+        ).exclude(estatus__nombre__in=['Cancelada']).count()
+
+    def get_porcentaje_carga(self, obj):
+        max_s = obj.sesiones_semanales_max or 10
+        actual = self.get_sesiones_semana_actuales(obj)
+        return round((actual / max_s) * 100, 1)
 
 class CaballoWriteSerializer(serializers.ModelSerializer):
     class Meta:
@@ -176,11 +195,30 @@ class SesionWriteSerializer(serializers.ModelSerializer):
         model = Sesion
         fields = '__all__'
 
+    def validate(self, attrs):
+        caballo = attrs.get('caballo')
+        fecha_hora = attrs.get('fecha_hora')
+        
+        # Check if updating (self.instance exists)
+        qs = Sesion.objects.filter(caballo=caballo, fecha_hora=fecha_hora).exclude(estatus__nombre='Cancelada')
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+            
+        if qs.exists():
+            raise serializers.ValidationError({"caballo": "Este caballo ya tiene una sesión programada en esta fecha y hora."})
+            
+        return attrs
+
 class ReporteSesionSerializer(serializers.ModelSerializer):
+    paciente_nombre = serializers.CharField(source='sesion.paciente.nombre', read_only=True, default='')
+    caballo_nombre = serializers.CharField(source='sesion.caballo.nombre', read_only=True, default='')
+    terapeuta_nombre = serializers.CharField(source='sesion.terapeuta.usuario.nombre_completo', read_only=True, default='')
+    fecha_sesion = serializers.DateTimeField(source='sesion.fecha_hora', read_only=True)
+
     class Meta:
         model = ReporteSesion
         fields = '__all__'
-        depth = 1
+        depth = 2
 
 class ReporteSesionWriteSerializer(serializers.ModelSerializer):
     class Meta:
@@ -188,11 +226,15 @@ class ReporteSesionWriteSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class TutorReporteSesionSerializer(serializers.ModelSerializer):
-    """Serializador para familias."""
+    """Serializador para familias — solo campos visibles."""
+    paciente_nombre = serializers.CharField(source='sesion.paciente.nombre', read_only=True, default='')
+    caballo_nombre = serializers.CharField(source='sesion.caballo.nombre', read_only=True, default='')
+    fecha_sesion = serializers.DateTimeField(source='sesion.fecha_hora', read_only=True)
+
     class Meta:
         model = ReporteSesion
-        fields = '__all__'
-        depth = 1
+        fields = ['id', 'sesion', 'paciente_nombre', 'caballo_nombre', 'fecha_sesion',
+                  'ansiedad_inicial', 'ansiedad_final', 'recomendacion_casa']
 
 
 class ReporteObjetivoSerializer(serializers.ModelSerializer):
