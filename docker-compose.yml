@@ -1,0 +1,127 @@
+networks:
+  backend_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  static_data:
+  media_data:
+
+services:
+  traefik:
+    image: traefik:v3.7
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=backend_net"
+      - "--entrypoints.web.address=:80"
+      # Fase 2 (con dominio): descomentar para HTTPS automático con Let's Encrypt
+      # - "--entrypoints.websecure.address=:443"
+      # - "--certificatesresolvers.le.acme.httpchallenge=true"
+      # - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+      # - "--certificatesresolvers.le.acme.email=tu-email@dominio.com"
+      # - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      # - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # - letsencrypt:/letsencrypt
+    networks:
+      - backend_net
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    volumes:
+      - static_data:/app/static_root
+      - media_data:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend_net
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend-api.rule=PathPrefix(`/api`)"
+      - "traefik.http.routers.backend-api.entrypoints=web"
+      - "traefik.http.routers.backend-api.priority=10"
+      - "traefik.http.routers.backend-api.service=backend"
+      - "traefik.http.routers.backend-admin.rule=PathPrefix(`/admin`)"
+      - "traefik.http.routers.backend-admin.entrypoints=web"
+      - "traefik.http.routers.backend-admin.priority=10"
+      - "traefik.http.routers.backend-admin.service=backend"
+      - "traefik.http.routers.backend-apiauth.rule=PathPrefix(`/api-auth`)"
+      - "traefik.http.routers.backend-apiauth.entrypoints=web"
+      - "traefik.http.routers.backend-apiauth.priority=10"
+      - "traefik.http.routers.backend-apiauth.service=backend"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+
+  frontend:
+    build:
+      context: ../../Frontend/cuadra-r-frontend
+      dockerfile: Dockerfile
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      - backend
+    networks:
+      - backend_net
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.frontend.entrypoints=web"
+      - "traefik.http.routers.frontend.priority=1"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+
+  staticfiles:
+    image: nginx:alpine
+    volumes:
+      - ./staticfiles/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_data:/usr/share/nginx/static:ro
+      - media_data:/usr/share/nginx/media:ro
+    networks:
+      - backend_net
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.staticmedia.rule=PathPrefix(`/static`) || PathPrefix(`/media`)"
+      - "traefik.http.routers.staticmedia.entrypoints=web"
+      - "traefik.http.routers.staticmedia.priority=10"
+      - "traefik.http.services.staticmedia.loadbalancer.server.port=80"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend_net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend_net
+    restart: unless-stopped

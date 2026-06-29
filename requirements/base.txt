@@ -9,3 +9,6 @@ bcrypt==4.2.0
 email_validator==2.2.0
 redis==5.1.0
 djangorestframework-simplejwt==5.5.1
+django-filter==24.2
+Pillow==11.0.0
+python-dateutil==2.9.0.post0
